@@ -1,0 +1,14 @@
+# node
+**/node_modules
+**/dist
+
+# API
+**/env
+**.env**
+
+# key.pem
+**.pem
+
+# Other
+memo.md
+/.VSCodeCounter
