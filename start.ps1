@@ -22,19 +22,32 @@ if (-not (Test-Path $frontendPath)) {
     exit 1
 }
 
-if (-not (Test-Path (Join-Path $backendPath "node_modules"))) {
-    Write-Host "Installing backend dependencies..." -ForegroundColor Yellow
-    Push-Location $backendPath
-    npm install
-    Pop-Location
+# Helper: node_modules が無い、または package-lock.json が前回の install より新しいときだけ npm install する
+function Install-IfNeeded {
+    param([string]$Path, [string]$Label)
+    $modules = Join-Path $Path "node_modules"
+    $lock    = Join-Path $Path "package-lock.json"
+    $marker  = Join-Path $modules ".package-lock.json"   # npm が install のたびに書く記録
+
+    $needInstall = -not (Test-Path $modules)
+    if (-not $needInstall -and (Test-Path $lock)) {
+        if (-not (Test-Path $marker) -or (Get-Item $lock).LastWriteTime -gt (Get-Item $marker).LastWriteTime) {
+            $needInstall = $true
+        }
+    }
+
+    if ($needInstall) {
+        Write-Host "Installing $Label dependencies..." -ForegroundColor Yellow
+        Push-Location $Path
+        npm install
+        Pop-Location
+        # 変更がなくて npm が記録を更新しなかった場合も、毎回 install しないよう更新日時をそろえる
+        if (Test-Path $marker) { (Get-Item $marker).LastWriteTime = Get-Date }
+    }
 }
 
-if (-not (Test-Path (Join-Path $frontendPath "node_modules"))) {
-    Write-Host "Installing frontend dependencies..." -ForegroundColor Yellow
-    Push-Location $frontendPath
-    npm install
-    Pop-Location
-}
+Install-IfNeeded -Path $backendPath -Label "backend"
+Install-IfNeeded -Path $frontendPath -Label "frontend"
 
 # 各サーバーの設定。Flag は「再起動して / 終了して」の合図に使う一時ファイル。
 $script:servers = @{

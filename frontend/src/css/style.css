@@ -4,3 +4,8 @@
 @theme {
   --font-noto-sans-jp: "Noto Sans JP", sans-serif;
 }
+
+html,
+body {
+  min-height: 100%;
+}

@@ -1,200 +1,276 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  createEvent,
-  deleteEvent,
-  fetchEvents,
-  setEventDone,
-  updateEvent,
-} from "./api/events";
-import Calendar from "./components/Calendar";
-import EventForm from "./components/EventForm";
-import EventList from "./components/EventList";
-import Modal from "./components/Modal";
+  createSchedule,
+  deleteSchedule,
+  fetchCategories,
+  fetchOccurrences,
+  fetchSettings,
+  updateOccurrence,
+  updateSchedule,
+  updateSettings,
+} from "./api/schedules";
+import Calendar, { calendarRange } from "./components/Calendar";
+import OccurrenceModal from "./components/OccurrenceModal";
+import ScheduleForm from "./components/ScheduleForm";
+import SettingsModal from "./components/SettingsModal";
+import UpcomingList from "./components/UpcomingList";
 import "./css/style.css";
-import type { EventItem, NewEvent } from "./types/event";
-import { toYmd } from "./utils/date";
+import { usePush } from "./hooks/usePush";
+import { useReminders } from "./hooks/useReminders";
+import type { Category, Occurrence, OccurrenceOverride, Schedule, ScheduleInput, Settings } from "./types/schedule";
+import { currentOverride } from "./types/schedule";
+import { addDays, toYmd, todayYmd } from "./utils/date";
+
+const UPCOMING_DAYS = 30; // 「日付が近づいている予定」に出す日数
+
+type FormState = { schedule: Schedule | null; date: string } | null;
 
 const App = () => {
-  const [events, setEvents] = useState<EventItem[]>([]);
-  const [selectedDate, setSelectedDate] = useState(toYmd(new Date()));
+  const [month, setMonth] = useState(() => new Date());
+  const [monthOccurrences, setMonthOccurrences] = useState<Occurrence[]>([]);
+  const [upcoming, setUpcoming] = useState<Occurrence[]>([]);
+  const [form, setForm] = useState<FormState>(null);
+  const [selected, setSelected] = useState<Occurrence | null>(null); // 1回分の操作メニュー
+  const [settings, setSettings] = useState<Settings>({ allday_time: "09:00" });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [undo, setUndo] = useState<{ occurrence: Occurrence; message: string } | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
 
-  // 登録・編集モーダル（editing が null なら新規登録）
-  const [formOpen, setFormOpen] = useState(false);
-  const [editing, setEditing] = useState<EventItem | null>(null);
+  const { notices, dismiss } = useReminders(reloadKey, settings.allday_time);
+  const push = usePush();
 
-  // 削除の確認モーダル
-  const [deleting, setDeleting] = useState<EventItem | null>(null);
+  useEffect(() => {
+    fetchSettings()
+      .then(setSettings)
+      .catch(() => {}); // 読めなければ既定値のまま
+  }, []);
 
-  const load = async () => {
+  const loadCategories = useCallback(() => {
+    fetchCategories()
+      .then(setCategories)
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadCategories();
+  }, [loadCategories]);
+
+  // カテゴリを変更・削除したら予定も読み直す（削除したカテゴリの予定は「なし」になるため）
+  const onCategoriesChanged = () => {
+    loadCategories();
+    setReloadKey((k) => k + 1);
+  };
+
+  const load = useCallback(async () => {
     try {
-      setEvents(await fetchEvents());
+      const { start, end } = calendarRange(month);
+      const today = new Date();
+      const [m, u] = await Promise.all([
+        fetchOccurrences(toYmd(start), toYmd(end)),
+        fetchOccurrences(toYmd(today), toYmd(addDays(today, UPCOMING_DAYS))),
+      ]);
+      setMonthOccurrences(m);
+      setUpcoming(u.filter((o) => !o.done && !o.skipped)); // 完了・休みは一覧に出さない
       setError("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "エラーが発生しました");
+      setError(e instanceof Error ? e.message : String(e));
     }
-  };
+  }, [month]);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load, reloadKey]);
 
-  const openCreate = () => {
-    setEditing(null);
-    setFormOpen(true);
+  const afterChange = () => {
+    setForm(null);
+    setSelected(null);
+    setReloadKey((k) => k + 1);
   };
 
-  const openEdit = (ev: EventItem) => {
-    setEditing(ev);
-    setFormOpen(true);
+  // 1回分の設定を変更（完了・休み・日時変更）
+  const changeOccurrence = async (o: Occurrence, override: OccurrenceOverride) => {
+    await updateOccurrence(o.schedule.id, o.original_date, override);
+    afterChange();
   };
 
-  // 失敗したときは例外を投げて、フォーム側にエラーを表示させる
-  const handleSubmit = async (data: NewEvent) => {
-    if (editing) {
-      await updateEvent(editing.id, data);
-    } else {
-      await createEvent(data);
-    }
-    await load();
-    setFormOpen(false);
-  };
-
-  const handleToggleDone = async (ev: EventItem) => {
+  // 一覧のチェックボックスから完了にする（数秒間「元に戻す」を表示）
+  const quickDone = async (o: Occurrence) => {
     try {
-      await setEventDone(ev.id, ev.is_done !== 1);
-      await load();
+      await changeOccurrence(o, { ...currentOverride(o), done: true });
+      clearTimeout(undoTimer.current);
+      setUndo({ occurrence: o, message: `「${o.schedule.title}」を完了にしました` });
+      undoTimer.current = setTimeout(() => setUndo(null), 6000);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "エラーが発生しました");
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
-  const handleDelete = async (scope: "one" | "all") => {
-    if (!deleting) return;
+  const undoDone = async () => {
+    if (!undo) return;
+    const o = undo.occurrence;
+    setUndo(null);
     try {
-      await deleteEvent(deleting.id, scope);
-      await load();
+      await changeOccurrence(o, currentOverride(o)); // 完了にする前の状態へ
     } catch (e) {
-      setError(e instanceof Error ? e.message : "エラーが発生しました");
-    } finally {
-      setDeleting(null);
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
-  const today = toYmd(new Date());
-  const selectedEvents = events.filter((ev) => ev.due_date === selectedDate);
-  const upcomingEvents = events
-    .filter((ev) => ev.is_done !== 1 && ev.due_date >= today)
-    .slice(0, 5);
+  const saveSettings = async (next: Settings) => {
+    setSettings(await updateSettings(next));
+    setReloadKey((k) => k + 1);
+  };
+
+  const handleSubmit = async (input: ScheduleInput) => {
+    if (form?.schedule) await updateSchedule(form.schedule.id, input);
+    else await createSchedule(input);
+    afterChange();
+  };
+
+  const handleDelete = async () => {
+    if (!form?.schedule) return;
+    await deleteSchedule(form.schedule.id);
+    afterChange();
+  };
+
+  const openOccurrence = (o: Occurrence) => setSelected(o);
 
   return (
-    <main className="max-w-5xl mx-auto p-4 space-y-6 font-(--font-noto-sans-jp)">
-      <header className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">EventNote</h1>
-        <button className="btn btn-primary" onClick={openCreate}>
-          ＋ 予定を追加
-        </button>
+    <div className="min-h-screen bg-base-200 font-noto-sans-jp">
+      <header className="navbar bg-base-100 shadow-sm px-4">
+        <div className="flex-1">
+          <h1 className="text-xl font-bold">📅 EventNote</h1>
+        </div>
+        <div className="flex gap-2">
+          {push.state === "off" && (
+            <button className="btn btn-sm btn-outline" onClick={push.subscribe}>
+              🔔 通知をオンにする
+            </button>
+          )}
+          {push.state === "on" && (
+            <div className="dropdown dropdown-end">
+              <div tabIndex={0} role="button" className="btn btn-sm btn-ghost">
+                🔔 通知オン
+              </div>
+              <ul tabIndex={0} className="dropdown-content menu bg-base-100 rounded-box z-10 w-44 p-2 shadow">
+                <li>
+                  <button onClick={push.sendTest}>テスト通知を送る</button>
+                </li>
+                <li>
+                  <button onClick={push.unsubscribe}>通知をオフにする</button>
+                </li>
+              </ul>
+            </div>
+          )}
+          <button className="btn btn-sm btn-ghost btn-square" onClick={() => setSettingsOpen(true)} aria-label="設定">
+            ⚙
+          </button>
+          <button className="btn btn-sm btn-primary" onClick={() => setForm({ schedule: null, date: todayYmd() })}>
+            ＋ 追加
+          </button>
+        </div>
       </header>
 
-      {error && <div className="alert alert-error">{error}</div>}
-
-      <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
-        {/* 左：カレンダー（常時表示） */}
-        <Calendar
-          events={events}
-          selectedDate={selectedDate}
-          onSelectDate={setSelectedDate}
-        />
-
-        {/* 右：予定の一覧 */}
-        <div className="space-y-6">
-          <section className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold">{selectedDate} の予定</h2>
-              <button className="btn btn-sm btn-outline" onClick={openCreate}>
-                この日に追加
-              </button>
-            </div>
-            <EventList
-              events={selectedEvents}
-              emptyMessage="この日の予定はありません"
-              onEdit={openEdit}
-              onDelete={setDeleting}
-              onToggleDone={handleToggleDone}
-            />
-          </section>
-
-          <section className="space-y-3">
-            <h2 className="text-lg font-bold">直近の予定</h2>
-            <EventList
-              events={upcomingEvents}
-              emptyMessage="これからの予定はありません"
-              onEdit={openEdit}
-              onDelete={setDeleting}
-              onToggleDone={handleToggleDone}
-            />
-          </section>
-        </div>
-      </div>
-
-      {/* 登録・編集モーダル（開いている間だけフォームを表示） */}
-      <Modal open={formOpen} onClose={() => setFormOpen(false)}>
-        {formOpen && (
-          <EventForm
-            defaultDate={selectedDate}
-            initial={editing ?? undefined}
-            onSubmit={handleSubmit}
-          />
-        )}
-      </Modal>
-
-      {/* 削除の確認モーダル */}
-      <Modal open={deleting !== null} onClose={() => setDeleting(null)}>
-        {deleting && (
-          <div className="space-y-4">
-            <h2 className="text-lg font-bold">予定を削除しますか？</h2>
-            <p>
-              「{deleting.title}」（{deleting.due_date}）を削除します。
-              この操作は取り消せません。
-            </p>
-            {deleting.rule_id !== null && (
-              <p className="text-sm opacity-70">
-                🔁
-                これは繰り返しの予定です。この予定だけ、または繰り返しすべてを削除できます。
-              </p>
-            )}
-            <div className="flex flex-wrap justify-end gap-2">
-              <button className="btn" onClick={() => setDeleting(null)}>
-                キャンセル
-              </button>
-              {deleting.rule_id !== null ? (
-                <>
-                  <button
-                    className="btn btn-error btn-outline"
-                    onClick={() => handleDelete("one")}
-                  >
-                    この予定だけ削除
-                  </button>
-                  <button
-                    className="btn btn-error"
-                    onClick={() => handleDelete("all")}
-                  >
-                    繰り返しをすべて削除
-                  </button>
-                </>
-              ) : (
-                <button
-                  className="btn btn-error"
-                  onClick={() => handleDelete("one")}
-                >
-                  削除
-                </button>
-              )}
-            </div>
+      <main className="max-w-6xl mx-auto p-3 sm:p-6">
+        {error && (
+          <div className="alert alert-error mb-4">
+            <span>{error}（バックエンドとMySQLが起動しているか確認してください）</span>
           </div>
         )}
-      </Modal>
-    </main>
+        {push.state === "denied" && (
+          <div className="alert alert-warning mb-4 text-sm">
+            ブラウザ通知がブロックされています。通知は画面内にのみ表示されます（アドレスバー左のアイコンから許可できます）。
+          </div>
+        )}
+        {push.state === "unsupported" && (
+          <div className="alert alert-warning mb-4 text-sm">
+            このブラウザは Web Push に対応していません。通知は画面を開いている間、画面内にのみ表示されます。
+          </div>
+        )}
+        {push.error && <div className="alert alert-error mb-4 text-sm">{push.error}</div>}
+
+        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="lg:col-span-2">
+            <Calendar
+              month={month}
+              occurrences={monthOccurrences}
+              categories={categories}
+              onChangeMonth={setMonth}
+              onSelectDate={(date) => setForm({ schedule: null, date })}
+              onSelectOccurrence={openOccurrence}
+            />
+          </div>
+          <UpcomingList occurrences={upcoming} categories={categories} days={UPCOMING_DAYS} onSelect={openOccurrence} onDone={quickDone} />
+        </div>
+      </main>
+
+      {form && (
+        <ScheduleForm
+          key={form.schedule?.id ?? `new-${form.date}`}
+          initial={form.schedule}
+          defaultDate={form.date}
+          alldayTime={settings.allday_time}
+          categories={categories}
+          onSubmit={handleSubmit}
+          onDelete={form.schedule ? handleDelete : undefined}
+          onClose={() => setForm(null)}
+        />
+      )}
+
+      {selected && (
+        <OccurrenceModal
+          key={`${selected.schedule.id}|${selected.original_date}`}
+          occurrence={selected}
+          category={categories.find((c) => c.id === selected.schedule.category_id)}
+          onChange={(override) => changeOccurrence(selected, override)}
+          onEditSeries={() => {
+            setSelected(null);
+            setForm({ schedule: selected.schedule, date: selected.date });
+          }}
+          onClose={() => setSelected(null)}
+        />
+      )}
+
+      {settingsOpen && (
+        <SettingsModal
+          settings={settings}
+          categories={categories}
+          onSaveSettings={saveSettings}
+          onCategoriesChanged={onCategoriesChanged}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+
+      {undo && (
+        <div className="toast toast-center toast-bottom z-50">
+          <div className="alert shadow-lg">
+            <span className="text-sm">✓ {undo.message}</span>
+            <button className="btn btn-sm btn-ghost text-primary" onClick={undoDone}>
+              元に戻す
+            </button>
+          </div>
+        </div>
+      )}
+
+      {notices.length > 0 && (
+        <div className="toast toast-end toast-bottom z-50">
+          {notices.map((n) => (
+            <div key={n.key} className="alert alert-info shadow-lg max-w-sm">
+              <div>
+                <div className="font-bold">{n.title}</div>
+                <div className="text-sm">{n.body}</div>
+              </div>
+              <button className="btn btn-ghost btn-xs" onClick={() => dismiss(n.key)} aria-label="閉じる">
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 };
 
