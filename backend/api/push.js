@@ -1,6 +1,8 @@
 const express = require("express");
 
-module.exports = (push, scheduler) => {
+// push     … Web Push（ブラウザ通知の購読管理）
+// notifier … 実際の通知の送り先（ブラウザ版は push と同じ、デスクトップ版は Windows の通知）
+module.exports = (push, scheduler, notifier = push) => {
   const router = express.Router();
 
   // GET /api/push/public-key  … ブラウザが購読するときに使う公開鍵
@@ -36,7 +38,7 @@ module.exports = (push, scheduler) => {
   // POST /api/push/test  … テスト通知
   router.post("/test", async (_req, res, next) => {
     try {
-      const sent = await push.sendToAll({
+      const sent = await notifier.sendToAll({
         title: "🔔 EventNote",
         body: "テスト通知です。通知は正しく届いています。",
         tag: "eventnote-test",

@@ -1,0 +1,50 @@
+{
+  "name": "eventnote-desktop",
+  "version": "1.0.0",
+  "description": "EventNote デスクトップ版",
+  "private": true,
+  "main": "main.js",
+  "author": "EventNote",
+  "scripts": {
+    "copy-app": "node scripts/copy-app.js",
+    "start": "node scripts/copy-app.js && electron .",
+    "dist": "node scripts/copy-app.js && electron-builder --win nsis"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.5",
+    "express": "^5.2.1",
+    "mysql2": "^3.24.5",
+    "web-push": "^3.6.7",
+    "light-my-request": "^6.8.0"
+  },
+  "devDependencies": {
+    "electron": "^44.7.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.eventnote.desktop",
+    "productName": "EventNote",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "app/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "EventNote"
+    }
+  }
+}

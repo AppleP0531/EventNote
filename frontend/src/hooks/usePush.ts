@@ -26,8 +26,11 @@ const postJson = async (url: string, body: unknown) => {
 const isSupported = () =>
   "serviceWorker" in navigator && "PushManager" in window && typeof Notification !== "undefined";
 
-/** Web Push の購読管理（Service Worker の登録・購読・解除・テスト送信） */
-export const usePush = () => {
+/**
+ * Web Push の購読管理（Service Worker の登録・購読・解除・テスト送信）
+ * enabled = false のとき（デスクトップ版）は何もしない
+ */
+export const usePush = (enabled = true) => {
   const [state, setState] = useState<PushState>("loading");
   const [error, setError] = useState("");
 
@@ -37,6 +40,7 @@ export const usePush = () => {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     if (!isSupported()) {
       setState("unsupported");
       return;
@@ -56,7 +60,7 @@ export const usePush = () => {
         setState("off");
       }
     })();
-  }, [getRegistration]);
+  }, [getRegistration, enabled]);
 
   const subscribe = async () => {
     setError("");

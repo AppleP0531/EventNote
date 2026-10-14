@@ -15,6 +15,8 @@ import ScheduleForm from "./components/ScheduleForm";
 import SettingsModal from "./components/SettingsModal";
 import UpcomingList from "./components/UpcomingList";
 import "./css/style.css";
+import DesktopMenu from "./components/DesktopMenu";
+import { desktop } from "./desktop";
 import { usePush } from "./hooks/usePush";
 import { useReminders } from "./hooks/useReminders";
 import type { Category, Occurrence, OccurrenceOverride, Schedule, ScheduleInput, Settings } from "./types/schedule";
@@ -40,7 +42,7 @@ const App = () => {
   const [reloadKey, setReloadKey] = useState(0);
 
   const { notices, dismiss } = useReminders(reloadKey, settings.allday_time);
-  const push = usePush();
+  const push = usePush(!desktop); // デスクトップ版は Windows の通知を使うので Web Push は使わない
 
   useEffect(() => {
     fetchSettings()
@@ -145,12 +147,13 @@ const App = () => {
           <h1 className="text-xl font-bold">📅 EventNote</h1>
         </div>
         <div className="flex gap-2">
-          {push.state === "off" && (
+          {desktop && <DesktopMenu bridge={desktop} />}
+          {!desktop && push.state === "off" && (
             <button className="btn btn-sm btn-outline" onClick={push.subscribe}>
               🔔 通知をオンにする
             </button>
           )}
-          {push.state === "on" && (
+          {!desktop && push.state === "on" && (
             <div className="dropdown dropdown-end">
               <div tabIndex={0} role="button" className="btn btn-sm btn-ghost">
                 🔔 通知オン
@@ -177,20 +180,20 @@ const App = () => {
       <main className="max-w-6xl mx-auto p-3 sm:p-6">
         {error && (
           <div className="alert alert-error mb-4">
-            <span>{error}（バックエンドとMySQLが起動しているか確認してください）</span>
+            <span>{error}（{desktop ? "MySQL" : "バックエンドとMySQL"}が起動しているか確認してください）</span>
           </div>
         )}
-        {push.state === "denied" && (
+        {!desktop && push.state === "denied" && (
           <div className="alert alert-warning mb-4 text-sm">
             ブラウザ通知がブロックされています。通知は画面内にのみ表示されます（アドレスバー左のアイコンから許可できます）。
           </div>
         )}
-        {push.state === "unsupported" && (
+        {!desktop && push.state === "unsupported" && (
           <div className="alert alert-warning mb-4 text-sm">
             このブラウザは Web Push に対応していません。通知は画面を開いている間、画面内にのみ表示されます。
           </div>
         )}
-        {push.error && <div className="alert alert-error mb-4 text-sm">{push.error}</div>}
+        {!desktop && push.error && <div className="alert alert-error mb-4 text-sm">{push.error}</div>}
 
         <div className="grid gap-4 lg:grid-cols-3">
           <div className="lg:col-span-2">
